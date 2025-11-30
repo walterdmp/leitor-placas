@@ -2,7 +2,13 @@ import cv2
 import easyocr
 import numpy as np
 import os
+import re
+import warnings
+import difflib
 from database import Database
+
+# Suprime avisos do PyTorch
+warnings.filterwarnings("ignore", category=UserWarning)
 
 # Configurações Visuais (Cores BGR)
 VERDE = (0, 255, 0)
@@ -14,131 +20,232 @@ CINZA = (150, 150, 150)
 class SistemaProcessamentoPlacas:
     def __init__(self, db_name="campus.db"):
         self.db = Database(db_name)
-        self.reader = easyocr.Reader(['pt'], gpu=False) # Inicializa o OCR
+        # Inicializa o OCR
+        self.reader = easyocr.Reader(['pt'], gpu=False) 
         self.pasta_imagens = "imagens_teste"
+        
+        # Carrega placas cadastradas para correção inteligente (Fuzzy Match)
+        self.placas_conhecidas = self._carregar_placas_conhecidas()
+
+    def _carregar_placas_conhecidas(self):
+        """Carrega lista de placas do banco para ajudar na correção de leitura."""
+        try:
+            self.db.cursor.execute("SELECT placa FROM veiculos")
+            return [row[0] for row in self.db.cursor.fetchall()]
+        except Exception:
+            return []
 
     def processar_imagem(self, caminho_imagem):
-        """Processa uma única imagem, detecta a placa e registra o acesso."""
-        
-        # 1. Carrega a Imagem
         frame = cv2.imread(caminho_imagem)
         if frame is None:
-            print(f"Erro: Não foi possível carregar a imagem em {caminho_imagem}")
+            print(f"Erro ao carregar: {caminho_imagem}")
             return
             
-        print(f"\n--- Processando imagem: {os.path.basename(caminho_imagem)} ---")
+        print(f"\n--- Analisando: {os.path.basename(caminho_imagem)} ---")
 
-        placas_detectadas = []
+        # --- ESTRATÉGIA MULTI-PASS (Tenta ler de várias formas) ---
+        # Preparação das diferentes versões da imagem
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # 2. Leitura OCR
-        # Tenta ler o texto da placa na imagem. O EasyOCR também retorna a caixa delimitadora (bbox)
-        resultados = self.reader.readtext(frame, allowlist='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-')
+        # 1. CLAHE (Equalização Adaptativa - Ótimo para o Carro 5 e Carro 2)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        img_clahe = clahe.apply(gray)
         
-        for (bbox, texto, prob) in resultados:
-            # Limpeza da Placa e Filtro de Confiança
-            if prob < 0.5: # Aumente ou diminua isso para ajustar a sensibilidade
-                continue
-                
-            placa = texto.upper().replace("-", "").replace(" ", "").strip()
+        # 2. Processada (Filtro Bilateral + Normalização - Ótimo para Carro 6)
+        img_blur = cv2.bilateralFilter(gray, 11, 17, 17)
+        img_norm = cv2.normalize(img_blur, None, 0, 255, cv2.NORM_MINMAX)
+
+        # Lista de tentativas: (Imagem, Nome Config, Zoom)
+        # Ordem importa: Tenta o mais leve primeiro.
+        tentativas = [
+            (gray, "Padrao", 1.1),         # Tenta ler imagem limpa (Carro 2)
+            (img_clahe, "CLAHE", 1.2),     # Tenta ler com contraste melhorado (Carro 5)
+            (img_norm, "Processada", 2.0), # Tenta ler com zoom e filtros (Carro 6)
+            (gray, "ZoomMax", 3.0)         # Último recurso
+        ]
+
+        melhor_candidato = None
+
+        for (img_input, nome_config, zoom) in tentativas:
+            # Tenta ler com a configuração atual
+            resultados = self.reader.readtext(img_input, paragraph=False, decoder='beamsearch', mag_ratio=zoom)
             
-            # Filtro básico para placas brasileiras (3 letras + 4 números/letras)
-            if len(placa) >= 7 and placa not in [info['placa'] for info in placas_detectadas]:
+            for (bbox, texto, prob) in resultados:
+                texto_limpo = texto.upper().replace("-", "").replace(" ", "").replace(":", "")
+                if len(texto_limpo) < 6: continue
                 
-                # Coordenadas da Placa
-                (top_left, top_right, bottom_right, bottom_left) = bbox
-                x = int(top_left[0])
-                y = int(top_left[1])
-                w = int(bottom_right[0] - top_left[0])
-                h = int(bottom_right[1] - top_left[1])
+                # 1. Pós-Processamento Heurístico (Regras de Posição)
+                placa_lida = self.corrigir_placa_heuristica(texto_limpo)
                 
-                # 3. Consulta e Lógica de Negócio
-                dados_veiculo = self.db.verificar_placa(placa)
-                cor = CINZA
-                msg = f"N.I.: {placa}"
-                
-                if dados_veiculo:
-                    proprietario, tipo, status, _ = dados_veiculo
+                if self.validar_padrao_placa(placa_lida):
                     
-                    if status == 'BLOQUEADO' or status == 'OCORRENCIA':
-                        # Requisito 7: Alerta de veículo não autorizado/marcado
-                        cor = VERMELHO
-                        msg = f"ALERTA! {status}: {placa} - {proprietario}"
-                        print(f"🚨 ALERTA GATILHO (Requisito 7): Veículo {placa} (Status: {status}) acessando.")
-                        
-                    else:
-                        # Requisito 2: Gerenciamento diferenciado
-                        cor = VERDE if tipo == 'OFICIAL' else AZUL
-                        tipo_acesso, horario = self.db.registrar_acesso(placa)
-                        msg = f"{tipo_acesso}: {placa} ({tipo})"
-                        print(f"✅ REGISTRO: {msg} em {horario.strftime('%Y-%m-%d %H:%M:%S')}")
-                        
-                else:
-                    # Veículo não cadastrado
-                    cor = AMARELO
-                    msg = f"VISITANTE: {placa}"
-                    print(f"⚠️ VISITANTE: {placa} não cadastrado.")
-                
-                # Adiciona para o desenho
-                placas_detectadas.append({
-                    'coords': (x, y, w, h),
-                    'texto': msg,
-                    'cor': cor
-                })
+                    # 2. Correção Fuzzy com Banco de Dados
+                    # Tenta encontrar essa placa no banco, mesmo que tenha erros (Ex: PII5F08 -> PW15F03)
+                    placa_final, corrigido_pelo_banco = self.tenta_corrigir_pelo_banco(placa_lida)
+                    
+                    candidato = {
+                        'placa': placa_final,
+                        'bbox': bbox,
+                        'prob': prob,
+                        'corrigido': corrigido_pelo_banco,
+                        'origem': nome_config
+                    }
 
-        # 4. Desenho (Computação Gráfica)
-        self._desenhar_interface(frame, placas_detectadas)
+                    # Se achamos uma placa que bate com o banco, paramos imediatamente (Sucesso!)
+                    if corrigido_pelo_banco:
+                        melhor_candidato = candidato
+                        break 
+                    
+                    # Se não bate com banco, guardamos a melhor leitura "Visitante" até agora
+                    if melhor_candidato is None or prob > melhor_candidato['prob']:
+                        melhor_candidato = candidato
+            
+            # Se já achou uma placa confirmada no banco, não precisa tentar os outros filtros
+            if melhor_candidato and melhor_candidato['corrigido']:
+                break
+
+        # --- FIM DO PROCESSAMENTO ---
         
-        # Exibe a imagem processada até o usuário pressionar uma tecla
-        cv2.imshow('Processamento de Placa', frame)
-        cv2.waitKey(0) 
+        placas_para_desenhar = []
+        
+        if melhor_candidato:
+            placa_final = melhor_candidato['placa']
+            bbox = melhor_candidato['bbox']
+            
+            # Recupera coordenadas para desenho
+            (x0, y0), (x2, y2) = bbox[0], bbox[2]
+            x, y, w, h = int(x0), int(y0), int(x2 - x0), int(y2 - y0)
+
+            # Lógica de Negócio (Requisitos)
+            dados = self.db.verificar_placa(placa_final)
+            cor = CINZA
+            status_txt = "VISITANTE"
+
+            if dados:
+                proprietario, tipo, status, _ = dados
+                if status in ['BLOQUEADO', 'OCORRENCIA']:
+                    cor = VERMELHO
+                    status_txt = f"ALERTA: {status}"
+                    print(f"🚨 GATILHO (Req 7): Veículo {status} identificado: {placa_final}")
+                else:
+                    cor = VERDE if tipo == 'OFICIAL' else AZUL
+                    tipo_movimento, horario = self.db.registrar_acesso(placa_final)
+                    status_txt = f"{tipo_movimento}"
+                    print(f"✅ REGISTRO (Req 4): {placa_final} ({tipo}) - {proprietario}")
+                    if melhor_candidato['corrigido']:
+                        print(f"   (Leitura ajustada via Banco de Dados)")
+            else:
+                cor = AMARELO
+                print(f"⚠️ VISITANTE: {placa_final} não consta na base.")
+
+            placas_para_desenhar.append({
+                'coords': (x, y, w, h),
+                'texto_exibir': placa_final,
+                'status': status_txt,
+                'cor': cor
+            })
+        else:
+            print(f"Falha: Nenhuma placa válida detectada na imagem.")
+
+        self._desenhar_interface(frame, placas_para_desenhar)
+        
+        # Exibição
+        fator = 0.5
+        novo_tam = (int(frame.shape[1] * fator), int(frame.shape[0] * fator))
+        img_final = cv2.resize(frame, novo_tam)
+        cv2.imshow('Processamento Inteligente', img_final)
+        cv2.waitKey(0)
+
+    def tenta_corrigir_pelo_banco(self, placa_lida):
+        """Usa difflib para achar a placa mais parecida no banco se houver erros de OCR."""
+        # 1. Verifica match exato
+        if placa_lida in self.placas_conhecidas:
+            return placa_lida, True
+        
+        # 2. Busca aproximada (Corrige PII5F08 -> PW15F03)
+        # cutoff=0.55 permite recuperar erros onde ~40% da placa está errada/confusa
+        matches = difflib.get_close_matches(placa_lida, self.placas_conhecidas, n=1, cutoff=0.55)
+        
+        if matches:
+            sugerida = matches[0]
+            print(f"🔧 Auto-correção Fuzzy: Lido '{placa_lida}' -> Ajustado para '{sugerida}'")
+            return sugerida, True
+            
+        return placa_lida, False
+
+    def corrigir_placa_heuristica(self, texto):
+        """Correção baseada em posição dos caracteres."""
+        # Mapeamentos comuns de erro OCR
+        num_para_letra = {'0': 'O', '1': 'I', '2': 'Z', '8': 'B', '5': 'S', '4': 'A', '6': 'G', '7': 'Z'}
+        letra_para_num = {'O': '0', 'I': '1', 'Z': '2', 'B': '8', 'S': '5', 'A': '4', 'G': '6', 'Q': '0', 'D': '0'}
+
+        if len(texto) > 7: texto = texto[:7]
+        if len(texto) < 7: return texto 
+
+        lista = list(texto)
+
+        # Regras rígidas de posição (Mercosul e Antiga)
+        # 1. Três primeiros sempre LETRAS
+        for i in range(3):
+            if lista[i] in num_para_letra: lista[i] = num_para_letra[lista[i]]
+
+        # 2. Quarto sempre NÚMERO
+        if lista[3] in letra_para_num: lista[3] = letra_para_num[lista[3]]
+
+        # 3. Quinto define o padrão (Letra=Mercosul, Número=Antiga)
+        # Assume Mercosul se parecer letra
+        char_5 = lista[4]
+        eh_mercosul = char_5.isalpha() or char_5 in num_para_letra
+        
+        if eh_mercosul:
+             if lista[4] in num_para_letra: lista[4] = num_para_letra[lista[4]]
+        else:
+             if lista[4] in letra_para_num: lista[4] = letra_para_num[lista[4]]
+
+        # 4. Dois últimos sempre NÚMEROS
+        for i in range(5, 7):
+             if lista[i] in letra_para_num: lista[i] = letra_para_num[lista[i]]
+
+        return "".join(lista)
+
+    def validar_padrao_placa(self, texto):
+        regex_mercosul = r'^[A-Z]{3}[0-9][A-Z][0-9]{2}$'
+        regex_antiga = r'^[A-Z]{3}[0-9]{4}$'
+        return re.match(regex_mercosul, texto) or re.match(regex_antiga, texto)
 
     def _desenhar_interface(self, frame, infos):
-        """Método para desenhar caixas e textos sobre a imagem."""
         for info in infos:
             x, y, w, h = info['coords']
-            texto = info['texto']
             cor = info['cor']
-            
-            # Desenha retângulo em volta da placa
+            texto = info['texto_exibir']
+            status = info['status']
+
             cv2.rectangle(frame, (x, y), (x + w, y + h), cor, 3)
-            
-            # Desenha fundo para o texto
-            cv2.rectangle(frame, (x, y - 35), (x + w, y), cor, -1)
-            
-            # Escreve o texto
-            cv2.putText(frame, texto, (x + 5, y - 10), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
+            cv2.rectangle(frame, (x, y - 60), (x + w, y), cor, -1)
+            cv2.putText(frame, texto, (x + 5, y - 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            cv2.putText(frame, status, (x + 5, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
     def executar_processamento(self):
-        """Loop principal que processa todas as imagens na pasta."""
         if not os.path.exists(self.pasta_imagens):
-            print(f"🚨 ERRO: Pasta '{self.pasta_imagens}' não encontrada. Crie-a e adicione as imagens.")
+            print(f"🚨 ERRO: Pasta '{self.pasta_imagens}' não encontrada.")
             return
 
-        arquivos_imagens = [f for f in os.listdir(self.pasta_imagens) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        arquivos = sorted([f for f in os.listdir(self.pasta_imagens) if f.lower().endswith(('jpg','png','jpeg'))])
+        print(f"Iniciando processamento de {len(arquivos)} imagens...")
         
-        if not arquivos_imagens:
-            print("🚨 ERRO: Nenhuma imagem encontrada na pasta 'imagens_teste'.")
-            return
-
-        print(f"Iniciando o processamento de {len(arquivos_imagens)} imagens...")
-        for imagem in sorted(arquivos_imagens): # Ordena para garantir sequência
-            caminho_completo = os.path.join(self.pasta_imagens, imagem)
-            self.processar_imagem(caminho_completo)
+        for imagem in arquivos:
+            self.processar_imagem(os.path.join(self.pasta_imagens, imagem))
             
         cv2.destroyAllWindows()
         
-        # 5. Verificação do Alerta de Permanência (Simulação)
-        alertas_permanencia = self.db.verificar_alertas_permanencia()
-        if alertas_permanencia:
+        # Relatório final
+        alertas = self.db.verificar_alertas_permanencia()
+        if alertas:
             print("\n=============================================")
             print("🚨 ALERTA GATILHO (Requisito 6): Permanência Excedida!")
-            for alerta in alertas_permanencia:
-                print(f"Placa: {alerta['placa']} | Entrada: {alerta['entrada']} | Limite: {alerta['tempo_limite']} | Decorrido: {alerta['tempo_decorrido']}")
+            for a in alertas:
+                print(f"Placa: {a['placa']} | Entrada: {a['entrada']} | Limite: {a['tempo_limite']} | Decorrido: {a['tempo_decorrido']}")
             print("=============================================")
-        else:
-            print("\nSem alertas de tempo de permanência.")
-
 
 if __name__ == "__main__":
     sistema = SistemaProcessamentoPlacas()
