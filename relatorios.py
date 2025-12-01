@@ -1,17 +1,16 @@
 import sqlite3
 import csv
-from datetime import datetime
 
 DB_NAME = "campus.db"
 OUTPUT_FILE = "relatorio_acessos.csv"
 
 def gerar_relatorio():
-    """Gera um relatório de todos os acessos do banco de dados para CSV."""
+    """Gera CSV com historico de acessos."""
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         
-        # Consulta para unir dados de acesso e cadastro
+        # Consulta unificada (Acessos + Veiculos)
         cursor.execute("""
             SELECT 
                 a.placa, 
@@ -29,17 +28,17 @@ def gerar_relatorio():
         with open(OUTPUT_FILE, 'w', newline='', encoding='utf-8') as file:
             writer = csv.writer(file, delimiter=';')
             
-            # Cabeçalho do CSV
+            # Cabecalho
             writer.writerow(['Placa', 'Entrada', 'Saída', 'Proprietário', 'Tipo', 'Status Cadastro'])
             
-            # Linhas de dados
+            # Dados
             writer.writerows(registros)
             
         conn.close()
-        print(f"\nRelatório gerado com sucesso em '{OUTPUT_FILE}'.")
+        print(f"\nRelatório gerado: '{OUTPUT_FILE}'")
         
     except sqlite3.Error as e:
-        print(f"Erro ao acessar o banco de dados: {e}")
+        print(f"Erro no banco: {e}")
 
 if __name__ == "__main__":
     gerar_relatorio()

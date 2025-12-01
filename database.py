@@ -8,17 +8,17 @@ class Database:
         self._criar_tabelas()
 
     def _criar_tabelas(self):
-        # Tabela de Veículos Cadastrados (Requisitos 2 e 3)
+        # Cria tabela de veículos
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS veiculos (
                 placa TEXT PRIMARY KEY,
                 proprietario TEXT,
-                tipo TEXT,   -- 'OFICIAL', 'PARTICULAR' (Requisito 2)
-                status TEXT, -- 'AUTORIZADO', 'BLOQUEADO', 'OCORRENCIA' (Requisito 3)
-                tempo_padrao_permanencia_horas REAL DEFAULT 8.0 -- Para Requisito 6
+                tipo TEXT,   -- OFICIAL ou PARTICULAR
+                status TEXT, -- AUTORIZADO, BLOQUEADO ou OCORRENCIA
+                tempo_padrao_permanencia_horas REAL DEFAULT 8.0
             )
         """)
-        # Tabela de Histórico de Acesso (Requisito 4)
+        # Cria tabela de histórico de acessos
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS acessos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,32 +29,31 @@ class Database:
         """)
         self.conn.commit()
         
-       # --- NOVOS DADOS DE TESTE COM SUAS PLACAS ---
+        # Dados iniciais de teste
         self.cursor.execute("SELECT count(*) FROM veiculos")
         if self.cursor.fetchone()[0] == 0:
-            # 1. Veículo Oficial (Requisito 2) - Use a placa do carro1
-            self.cursor.execute("INSERT INTO veiculos VALUES ('PW15F03', 'Diretor Geral', 'OFICIAL', 'AUTORIZADO', 24.0)") 
+            # 1. Veículo Oficial
+            self.cursor.execute("INSERT INTO veiculos VALUES ('PWI5F03', 'Diretor Geral', 'OFICIAL', 'AUTORIZADO', 24.0)") 
             
-            # 2. Veículo Particular Normal (Requisito 2) - Use a placa do carro2
+            # 2. Veículo Particular
             self.cursor.execute("INSERT INTO veiculos VALUES ('RUR4C47', 'Estudante Maria', 'PARTICULAR', 'AUTORIZADO', 8.0)") 
             
-            # 3. Veículo Bloqueado/Não Autorizado (Requisito 7) - Use a placa do carro3
+            # 3. Veículo Bloqueado
             self.cursor.execute("INSERT INTO veiculos VALUES ('FBZ4968', 'Ex-Funcionário', 'PARTICULAR', 'BLOQUEADO', 8.0)") 
             
-            # 4. Veículo Marcado/Ocorrência (Requisito 3, 7) - Use a placa do carro4
+            # 4. Veículo com Ocorrência
             self.cursor.execute("INSERT INTO veiculos VALUES ('PXH4B02', 'Terceirizado Suspeito', 'PARTICULAR', 'OCORRENCIA', 8.0)") 
             
-            # Placa 5 (RNB7G77) usaremos para a Saída
+            # 5. Veículo Oficial (para saída)
             self.cursor.execute("INSERT INTO veiculos VALUES ('RNB7G77', 'Prof. Ana', 'OFICIAL', 'AUTORIZADO', 24.0)")
             
-            # SIMULAÇÃO DE PERMANÊNCIA EXCEDIDA (Requisito 6)
-            # Simula entrada há 12 horas para o 'RUR4C47' (Limite de 8h), gerando alerta
-            data_permanencia_excedida = datetime.now() - timedelta(hours=12)
+            # Simulação de permanência excedida (12h atrás)
+            data_passada = datetime.now() - timedelta(hours=12)
             self.cursor.execute("INSERT INTO acessos (placa, entrada, saida) VALUES (?, ?, NULL)", 
-                            ('RUR4C47', data_permanencia_excedida.strftime('%Y-%m-%d %H:%M:%S.%f')))
+                            ('RUR4C47', data_passada.strftime('%Y-%m-%d %H:%M:%S.%f')))
             
             self.conn.commit()
-            print("Base de dados criada e preenchida com dados de teste.")
+            print("Banco de dados inicializado com sucesso.")
 
     def verificar_placa(self, placa):
         self.cursor.execute("SELECT proprietario, tipo, status, tempo_padrao_permanencia_horas FROM veiculos WHERE placa = ?", (placa,))
@@ -62,28 +61,26 @@ class Database:
 
     def registrar_acesso(self, placa):
         agora = datetime.now()
-        # Simplificando: A detecção da placa na imagem é considerada a ENTRADA ou SAÍDA.
         
-        # 1. Verifica se veículo está ATIVO (entrada registrada, mas sem saída)
+        # Verifica se já existe entrada sem saída (veículo no campus)
         self.cursor.execute("SELECT id, entrada FROM acessos WHERE placa = ? AND saida IS NULL", (placa,))
         registro_ativo = self.cursor.fetchone()
         
         if registro_ativo:
-            # 2. Se está ATIVO, registra SAÍDA
+            # Registra saída
             id_acesso, entrada = registro_ativo
             self.cursor.execute("UPDATE acessos SET saida = ? WHERE id = ?", (agora, id_acesso))
             self.conn.commit()
             return "SAIDA", entrada
         else:
-            # 3. Se não está ATIVO, registra ENTRADA
+            # Registra entrada
             self.cursor.execute("INSERT INTO acessos (placa, entrada, saida) VALUES (?, ?, NULL)", (placa, agora))
             self.conn.commit()
             return "ENTRADA", agora
 
     def verificar_alertas_permanencia(self):
-        """Verifica quais veículos ativos excederam o tempo padrão (Requisito 6)"""
+        """Verifica veículos que excederam o tempo limite."""
         alertas = []
-        # Seleciona acessos ativos e pega o tempo padrão do veículo
         self.cursor.execute("""
             SELECT 
                 a.placa, 
