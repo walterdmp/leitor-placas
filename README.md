@@ -4,4 +4,4 @@ O presente projeto foi desenvolvido como parte da disciplina de computação gr�
 
 O projeto utiliza uma IA para leitura das placas dos carros e verificar no banco de dados se o veículo está autorizado a entrar.
 
-### Projeto desenvolvido por Arielce Junior, Enrique Lobo e Walter Dias.
+##### Projeto desenvolvido por Arielce Junior, Enrique Lobo e Walter Dias.
