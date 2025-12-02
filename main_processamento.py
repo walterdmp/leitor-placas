@@ -67,7 +67,7 @@ class SistemaProcessamentoPlacas:
         melhor_candidato = None
 
         for (img_input, nome_config, zoom) in tentativas:
-            # Tenta ler com a configuração atual
+            # Tenta ler com a configuração atual.
             resultados = self.reader.readtext(img_input, paragraph=False, decoder='beamsearch', mag_ratio=zoom)
             
             for (bbox, texto, prob) in resultados:
@@ -90,16 +90,16 @@ class SistemaProcessamentoPlacas:
                         'origem': nome_config
                     }
 
-                    # Se achamos uma placa confirmada, paramos
+                    # Se achamos uma placa confirmada, paramos.
                     if corrigido_pelo_banco:
                         melhor_candidato = candidato
                         break 
                     
-                    # Guarda a melhor leitura provisória
+                    # Guarda a melhor leitura provisória.
                     if melhor_candidato is None or prob > melhor_candidato['prob']:
                         melhor_candidato = candidato
             
-            # Interrompe loop de tentativas se já encontrou
+            # Interrompe loop de tentativas se já encontrou.
             if melhor_candidato and melhor_candidato['corrigido']:
                 break
 
