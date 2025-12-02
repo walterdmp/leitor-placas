@@ -143,7 +143,7 @@ class SistemaProcessamentoPlacas:
                 'cor': cor
             })
         else:
-            print(f"Falha: Nenhuma placa detectada.")
+            print(f"Falha: Nenhuma placa detectada!")
 
         self._desenhar_interface(frame, placas_para_desenhar)
         

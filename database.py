@@ -79,7 +79,7 @@ class Database:
             return "ENTRADA", agora
 
     def verificar_alertas_permanencia(self):
-        """Verifica veículos que excederam o tempo limite."""
+        """Verificação dos veículos que excederam o tempo limite."""
         alertas = []
         self.cursor.execute("""
             SELECT 

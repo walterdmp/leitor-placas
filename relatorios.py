@@ -38,7 +38,7 @@ def gerar_relatorio():
         print(f"\nRelatório gerado: '{OUTPUT_FILE}'")
         
     except sqlite3.Error as e:
-        print(f"Erro no banco: {e}")
+        print(f"Erro no banco de dados: {e}")
 
 if __name__ == "__main__":
     gerar_relatorio()
